@@ -1,0 +1,95 @@
+name: LIL InstantTensor CUDA 13.4 wheels
+
+on:
+  push:
+    branches:
+      - community/jovian-judgement-cu134
+    tags:
+      - instanttensor-cu134-stable-*
+    paths:
+      - .github/workflows/lil-cu134-wheel-release.yml
+      - ci/lil_wheels/**
+      - csrc/**
+      - instanttensor/**
+      - pyproject.toml
+      - setup.py
+
+permissions:
+  contents: write
+
+concurrency:
+  group: lil-instanttensor-cu134-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-beta:
+    if: github.repository == 'local-inference-lab/InstantTensor' && github.ref_type == 'branch'
+    runs-on: [self-hosted, lil-wheel-builder]
+    timeout-minutes: 90
+    steps:
+      - name: Check out the exact InstantTensor source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          submodules: false
+          persist-credentials: false
+
+      - name: Check out hash-locked native dependencies
+        run: |
+          set -euo pipefail
+          git config submodule.csrc/third_party/libaio.url https://github.com/1g4-mirror/libaio.git
+          git submodule sync --recursive
+          git submodule update --init --recursive --jobs 8
+
+      - name: Build and verify the source-locked wheel
+        run: >-
+          flock --exclusive --wait 21600
+          /var/lib/github-flashinfer/locks/cu134-sm120-build.lock
+          ci/lil_wheels/build_bundle.sh
+
+      - name: Publish or verify the immutable beta release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          output=dist/lil-instanttensor-wheel
+          tag="instanttensor-cu134-beta-${GITHUB_SHA}"
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            mkdir existing-release
+            gh release download "${tag}" --dir existing-release
+            ci/lil_wheels/verify_release_assets.py --directory existing-release --source-commit "${GITHUB_SHA}" --beta-tag "${tag}"
+            exit 0
+          fi
+          gh release create "${tag}" --target "${GITHUB_SHA}" --prerelease \
+            --title "InstantTensor CUDA 13.4 beta ${GITHUB_SHA:0:12}" \
+            --notes-file "${output}/release-notes.md" \
+            "${output}"/bundle/wheels/*.whl "${output}"/bundle/manifest.json \
+            "${output}"/bundle/SHA256SUMS "${output}"/bundle/requirements-github.txt \
+            "${output}"/bundle/install.sh "${output}"/bundle/runtime.lock \
+            "${output}"/instanttensor-cu134-*.tar.zst*
+
+  promote-stable:
+    if: github.repository == 'local-inference-lab/InstantTensor' && github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Promote the wheel bytes produced for the tagged source commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          beta_tag="instanttensor-cu134-beta-${GITHUB_SHA}"
+          mkdir assets
+          gh release download "${beta_tag}" --dir assets
+          ci/lil_wheels/verify_release_assets.py --directory assets --source-commit "${GITHUB_SHA}" --beta-tag "${beta_tag}"
+          jq -n --arg status qualified --arg source_release "${beta_tag}" \
+            --arg source_commit "${GITHUB_SHA}" \
+            '{schema: "local-inference-instanttensor-promotion/v1", status: $status, source_release: $source_release, source_commit: $source_commit, invariant: "Wheel bytes are unchanged from the qualified beta release."}' \
+            > assets/stable-promotion.json
+          gh release create "${GITHUB_REF_NAME}" --target "${GITHUB_SHA}" \
+            --title "InstantTensor CUDA 13.4 stable ${GITHUB_SHA:0:12}" \
+            --notes "Qualified promotion of ${beta_tag}; wheel bytes were not rebuilt." assets/*
