@@ -25,7 +25,8 @@ jobs:
   build-beta:
     if: github.repository == 'local-inference-lab/InstantTensor' && github.ref_type == 'branch'
     runs-on: [self-hosted, lil-wheel-builder]
-    timeout-minutes: 90
+    # Six hours for the shared-worker lock plus ninety minutes for compilation.
+    timeout-minutes: 450
     steps:
       - name: Check out the exact InstantTensor source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
