@@ -3,7 +3,7 @@ name: LIL InstantTensor CUDA 13.4 wheels
 on:
   push:
     branches:
-      - community/jovian-judgement-cu134
+      - main
     tags:
       - instanttensor-cu134-stable-*
     paths:
