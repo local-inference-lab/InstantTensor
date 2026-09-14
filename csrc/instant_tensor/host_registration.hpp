@@ -20,6 +20,20 @@ struct HostRegistration {
     int whole_buffer_error = 0;
 };
 
+class HostRegistrationCleanupError : public std::runtime_error {
+public:
+    // Storage may still be registered with CUDA. Transfer these ranges to a
+    // recovery handler; never free the allocation merely by destroying this error.
+    // Unrecovered storage remains allocated until process exit.
+    void* allocation_ptr;
+    HostRegistration registration;
+    int cleanup_error;
+
+    HostRegistrationCleanupError(void* ptr, HostRegistration remaining, int error)
+        : std::runtime_error("Host registration rollback failed; allocation retained, pinned-memory fallback disabled"),
+          allocation_ptr(ptr), registration(std::move(remaining)), cleanup_error(error) {}
+};
+
 struct HostBufferAllocation {
     void* ptr = nullptr;
     HostRegistration registration;
@@ -42,6 +56,9 @@ HostRegistration register_host_buffer(
     }
 
     HostRegistration registration;
+    // Reserve bookkeeping before registering storage so allocation failure
+    // cannot discard ownership of an already registered segment.
+    registration.ranges.reserve(1 + (size - 1) / segment_size);
     int result = register_fn(ptr, size, flags);
     if (result == 0) {
         registration.ranges.push_back({ptr, size});
@@ -61,8 +78,17 @@ HostRegistration register_host_buffer(
         }
 
         clear_error_fn();
-        for (auto it = registration.ranges.rbegin(); it != registration.ranges.rend(); ++it) {
-            unregister_fn(it->ptr);
+        int cleanup_error = 0;
+        for (size_t index = registration.ranges.size(); index > 0; --index) {
+            const int error = unregister_fn(registration.ranges[index - 1].ptr);
+            if (error == 0) {
+                registration.ranges.erase(registration.ranges.begin() + index - 1);
+            } else {
+                cleanup_error = error;
+            }
+        }
+        if (cleanup_error != 0) {
+            throw HostRegistrationCleanupError(ptr, std::move(registration), cleanup_error);
         }
         throw std::runtime_error(
             "Host registration failed for the whole buffer (code "
@@ -115,6 +141,8 @@ HostBufferAllocation allocate_registered_host_buffer(
             std::forward<ClearErrorFn>(clear_error_fn)
         );
         return allocation;
+    } catch (const HostRegistrationCleanupError&) {
+        throw;
     } catch (const std::exception& error) {
         allocation.registration_failure = error.what();
     }

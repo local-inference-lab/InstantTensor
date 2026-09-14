@@ -152,4 +152,43 @@ int main() {
         assert(threw);
         assert(ordinary_free_calls == 1);
     }
+
+    {
+        int register_calls = 0;
+        int ordinary_free_calls = 0;
+        int runtime_alloc_calls = 0;
+        int unregister_calls = 0;
+        bool threw = false;
+        try {
+            allocate_registered_host_buffer(
+                storage.size(), 256, 0, 0, 256,
+                [&](size_t, size_t) { return base; },
+                [&](void*) { ++ordinary_free_calls; },
+                [&](void*, size_t size, unsigned int) {
+                    ++register_calls;
+                    return size > 256 || register_calls == 4 ? 1 : 0;
+                },
+                [&](void* ptr) {
+                    ++unregister_calls;
+                    return ptr == base ? 3 : 0;
+                },
+                []() {},
+                [&](void**, size_t, unsigned int) {
+                    ++runtime_alloc_calls;
+                    return 1;
+                }
+            );
+        } catch (const instanttensor::HostRegistrationCleanupError& error) {
+            threw = true;
+            assert(error.allocation_ptr == base);
+            assert(error.cleanup_error == 3);
+            assert(error.registration.ranges.size() == 1);
+            assert(error.registration.ranges[0].ptr == base);
+            assert(error.registration.ranges[0].size == 256);
+        }
+        assert(threw);
+        assert(unregister_calls == 2);
+        assert(ordinary_free_calls == 0);
+        assert(runtime_alloc_calls == 0);
+    }
 }

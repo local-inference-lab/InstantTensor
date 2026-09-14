@@ -25,8 +25,8 @@ jobs:
   build-beta:
     if: github.repository == 'local-inference-lab/InstantTensor' && github.ref_type == 'branch'
     runs-on: [self-hosted, lil-wheel-builder]
-    # Six hours for the shared-worker lock plus ninety minutes for compilation.
-    timeout-minutes: 450
+    # Lock and compilation budgets plus one hour for checkout and publication.
+    timeout-minutes: 510
     steps:
       - name: Check out the exact InstantTensor source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -55,10 +55,17 @@ jobs:
           set -euo pipefail
           output=dist/lil-instanttensor-wheel
           tag="instanttensor-cu134-beta-${GITHUB_SHA}"
+          mkdir built-release
+          cp "${output}"/bundle/wheels/*.whl "${output}"/bundle/manifest.json \
+            "${output}"/bundle/SHA256SUMS "${output}"/bundle/requirements-github.txt \
+            "${output}"/bundle/install.sh "${output}"/bundle/runtime.lock \
+            "${output}"/instanttensor-cu134-*.tar.zst* built-release/
+          ci/lil_wheels/verify_release_assets.py --directory built-release \
+            --source-commit "${GITHUB_SHA}" --beta-tag "${tag}"
           if gh release view "${tag}" >/dev/null 2>&1; then
             mkdir existing-release
             gh release download "${tag}" --dir existing-release
-            ci/lil_wheels/verify_release_assets.py --directory existing-release --source-commit "${GITHUB_SHA}" --beta-tag "${tag}"
+            ci/lil_wheels/verify_release_assets.py --directory existing-release --source-commit "${GITHUB_SHA}" --beta-tag "${tag}" --reference-directory built-release
             exit 0
           fi
           gh release create "${tag}" --target "${GITHUB_SHA}" --prerelease \
@@ -87,10 +94,24 @@ jobs:
           mkdir assets
           gh release download "${beta_tag}" --dir assets
           ci/lil_wheels/verify_release_assets.py --directory assets --source-commit "${GITHUB_SHA}" --beta-tag "${beta_tag}"
-          jq -n --arg status qualified --arg source_release "${beta_tag}" \
+          stable_tag="${GITHUB_REF_NAME}"
+          if gh release view "${stable_tag}" >/dev/null 2>&1; then
+            mkdir existing-stable-release
+            gh release download "${stable_tag}" --dir existing-stable-release
+            ci/lil_wheels/verify_release_assets.py --directory existing-stable-release \
+              --source-commit "${GITHUB_SHA}" --beta-tag "${beta_tag}" \
+              --promotion --reference-directory assets
+            exit 0
+          fi
+          cp -a assets source-beta
+          jq -n --arg status byte-identical-promotion --arg source_release "${beta_tag}" \
             --arg source_commit "${GITHUB_SHA}" \
-            '{schema: "local-inference-instanttensor-promotion/v1", status: $status, source_release: $source_release, source_commit: $source_commit, invariant: "Wheel bytes are unchanged from the qualified beta release."}' \
+            --arg source_manifest_sha256 "$(sha256sum assets/manifest.json | awk '{print $1}')" \
+            '{schema: "local-inference-instanttensor-promotion/v1", status: $status, source_release: $source_release, source_commit: $source_commit, source_manifest_sha256: $source_manifest_sha256, invariant: "Wheel bytes are unchanged from the source beta release."}' \
             > assets/stable-promotion.json
+          ci/lil_wheels/verify_release_assets.py --directory assets \
+            --source-commit "${GITHUB_SHA}" --beta-tag "${beta_tag}" \
+            --promotion --reference-directory source-beta
           gh release create "${GITHUB_REF_NAME}" --target "${GITHUB_SHA}" \
             --title "InstantTensor CUDA 13.4 stable ${GITHUB_SHA:0:12}" \
-            --notes "Qualified promotion of ${beta_tag}; wheel bytes were not rebuilt." assets/*
+            --notes "Byte-identical promotion of ${beta_tag}; wheel bytes were not rebuilt." assets/*
