@@ -8,10 +8,11 @@ FROM ${BUILDER_IMAGE} AS wheels
 ARG SOURCE_COMMIT
 ARG SOURCE_DATE_EPOCH
 ARG UV_SHA256
+ARG BUILD_REQUIREMENTS=ci/lil_wheels/build-requirements.lock
 ENV PATH=/build-venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 COPY --from=uv /uv /usr/local/bin/uv
-COPY ci/lil_wheels/build-requirements.lock /tmp/build-requirements.lock
+COPY ${BUILD_REQUIREMENTS} /tmp/build-requirements.lock
 RUN test "$(sha256sum /usr/local/bin/uv | awk '{print $1}')" = "${UV_SHA256}" \
     && uv venv --python /usr/bin/python --system-site-packages /build-venv \
     && uv pip install --python /build-venv/bin/python \
