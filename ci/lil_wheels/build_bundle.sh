@@ -4,7 +4,16 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 tool_dir="${repo_root}/ci/lil_wheels"
-lock_path="${tool_dir}/runtime.lock"
+# linux/amd64 uses the locks next to this script; another platform keeps its
+# own runtime and build-tool locks in a directory named after the platform.
+platform=${LIL_WHEEL_PLATFORM:-linux/amd64}
+case "${platform}" in
+  linux/amd64) lock_dir="${tool_dir}" ;;
+  linux/arm64) lock_dir="${tool_dir}/linux-arm64" ;;
+  *) printf 'Unsupported wheel platform: %s\n' "${platform}" >&2; exit 1 ;;
+esac
+lock_path="${lock_dir}/runtime.lock"
+build_requirements="${lock_dir#"${repo_root}/"}/build-requirements.lock"
 output_dir=${1:-"${repo_root}/dist/lil-instanttensor-wheel"}
 
 lock_value() {
@@ -19,6 +28,8 @@ source_date_epoch=$(git -C "${repo_root}" show -s --format=%ct HEAD)
 repository=${GITHUB_REPOSITORY:-local-inference-lab/InstantTensor}
 release_tag=${INSTANTTENSOR_RELEASE_TAG:-"instanttensor-cu134-beta-${source_commit}"}
 builder=$(lock_value buildx.builder)
+# Locks without a platform key predate arm64 and describe linux/amd64.
+test "$(lock_value platform 2>/dev/null || echo linux/amd64)" = "${platform}"
 test -z "$(git -C "${repo_root}" status --porcelain)"
 for submodule in atomic_queue dlpack libaio liburing pybind11; do
   test -e "${repo_root}/csrc/third_party/${submodule}/.git"
@@ -37,7 +48,9 @@ mkdir -p "${output_dir}/raw" "${output_dir}/bundle/wheels"
 
 docker buildx build \
   --builder "${builder}" \
+  --platform "${platform}" \
   --file "${tool_dir}/Dockerfile" \
+  --build-arg "BUILD_REQUIREMENTS=${build_requirements}" \
   --build-arg "BUILDER_IMAGE=$(lock_value builder.image)" \
   --build-arg "UV_IMAGE=$(lock_value uv.image)" \
   --build-arg "UV_SHA256=$(lock_value uv.sha256)" \
